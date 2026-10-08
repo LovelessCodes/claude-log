@@ -21,6 +21,7 @@ type Example = (typeof EXAMPLES)[number];
 
 const ZIP_CMD = `cd ~/.claude && zip -r ~/Desktop/claude-data.zip projects history.jsonl stats-cache.json sessions -x '*/tool-results/*'`;
 const CODEX_ZIP_CMD = `cd ~/.codex && zip -r ~/Desktop/codex-data.zip sessions archived_sessions history.jsonl`;
+const OPENCODE_DB = '~/.local/share/opencode/opencode.db';
 const LOCAL_CMD = 'npx claude-log';
 const SOURCE_CMD = `git clone ${REPO_URL} && cd claude-log && npm install && npm run build:cli && npm run report`;
 
@@ -38,11 +39,12 @@ export default function App() {
   };
   const workerRef = useRef<Worker | null>(null);
 
-  // Several zips (e.g. Claude Code and Codex) are combined into one report.
+  // Several zips (e.g. Claude Code and Codex) and an OpenCode database are
+  // combined into one report.
   const load = (files: File[]) => {
-    const bad = files.find((f) => !/\.zip$/i.test(f.name));
+    const bad = files.find((f) => !/\.(zip|db|db-wal|db-shm)$/i.test(f.name));
     if (bad) {
-      setState({ phase: 'idle', error: `"${bad.name}" is not a .zip file.` });
+      setState({ phase: 'idle', error: `"${bad.name}" is not a .zip, .db, .db-wal or .db-shm file.` });
       return;
     }
     workerRef.current?.terminate();
@@ -127,7 +129,7 @@ function Landing({ state, onFiles }: { state: Exclude<State, { phase: 'ready' }>
   const [over, setOver] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const p = state.phase === 'loading' ? state.progress : null;
-  const ratio = p && p.totalBytes ? p.doneBytes / p.totalBytes : 0;
+  const ratio = p && p.totalBytes ? Math.min(1, p.doneBytes / p.totalBytes) : 0;
 
   return (
     <div className="app">
@@ -191,12 +193,12 @@ function Landing({ state, onFiles }: { state: Exclude<State, { phase: 'ready' }>
             }}
           >
             <span className="dz-icon">{icons.upload}</span>
-            <strong>Drop claude-data.zip here (and codex-data.zip)</strong>
-            <span className="dz-sub">or click to choose a file</span>
+            <strong>Drop claude-data.zip here (and codex-data.zip or opencode.db)</strong>
+            <span className="dz-sub">or click to choose files</span>
             <input
               ref={input}
               type="file"
-              accept=".zip,application/zip"
+              accept=".zip,application/zip,.db,.db-wal,.db-shm"
               multiple
               hidden
               onChange={(e) => {
@@ -225,6 +227,15 @@ function Landing({ state, onFiles }: { state: Exclude<State, { phase: 'ready' }>
             <code>sessions/</code> and <code>archived_sessions/</code> hold the session rollouts (tokens, tools, prompts and plan usage limits),{' '}
             <code>history.jsonl</code> is the prompt history. Costs are computed at OpenAI API prices.
           </p>
+          <p>
+            Using OpenCode too? It keeps everything in one SQLite database, so drop the file itself — no zip needed. It is at{' '}
+            <code>{OPENCODE_DB}</code> (on macOS: <code>~/Library/Application Support/opencode/opencode.db</code>, on Windows: under{' '}
+            <code>%LOCALAPPDATA%\opencode</code>).
+          </p>
+          <p className="fine">
+            If <code>opencode.db-wal</code> exists next to it, drop that file too: it holds the newest sessions. The database can be large; the CLI
+            reads it page by page, so use <code>npx claude-log</code> for big histories. Costs are the amounts OpenCode recorded for every call.
+          </p>
         </div>
 
         <div className="card howto">
@@ -234,9 +245,10 @@ function Landing({ state, onFiles }: { state: Exclude<State, { phase: 'ready' }>
           </p>
           <Command text={LOCAL_CMD} />
           <p className="fine">
-            It reads <code>~/.claude</code> and <code>~/.codex</code> directly (whichever exist) and writes <code>claude-log-report.html</code> to the current directory, then opens it in your
-            browser. The report is a single self-contained file with no network requests. Use <code>-o ~/Desktop/report.html</code> to choose where
-            it goes, <code>--claude</code> or <code>--codex</code> to read only one tool, or pass directories or zips to read other data.
+            It reads <code>~/.claude</code>, <code>~/.codex</code> and <code>~/.local/share/opencode</code> directly (whichever exist) and writes{' '}
+            <code>claude-log-report.html</code> to the current directory, then opens it in your browser. The report is a single self-contained file with
+            no network requests. Use <code>-o ~/Desktop/report.html</code> to choose where it goes, <code>--claude</code>, <code>--codex</code> or{' '}
+            <code>--opencode</code> to read only one tool, or pass directories, <code>opencode.db</code> files or zips to read other data.
           </p>
           <p className="fine">
             claude-log is open source.{' '}

@@ -5,8 +5,17 @@ export interface Filter {
   from: number | null;
   to: number | null;
   project: string | null;
-  // Claude Code or Codex only, when the report combines both.
+  // Claude Code, Codex or OpenCode only, when the report combines tools.
   source: Source | null;
+}
+
+export function sourceLabel(source: Source): string {
+  return source === 'claude' ? 'Claude Code' : source === 'codex' ? 'Codex' : 'OpenCode';
+}
+
+// "Claude Code + Codex + OpenCode" for a set of tools.
+export function toolTitle(sources: Source[]): string {
+  return sources.map(sourceLabel).join(' + ');
 }
 
 export interface Row {
@@ -61,9 +70,9 @@ function groupSum<T>(items: T[], key: (x: T) => string, val: (x: T) => number): 
   return m;
 }
 
-// Shell tools: Claude Code's Bash and Codex's exec_command and friends.
-const SHELL_TOOLS = new Set(['Bash', 'exec_command', 'shell_command', 'shell', 'local_shell', 'container.exec']);
-const EDIT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'apply_patch'];
+// Shell tools: Claude Code's Bash, Codex's exec_command, OpenCode's bash.
+const SHELL_TOOLS = new Set(['Bash', 'bash', 'exec_command', 'shell_command', 'shell', 'local_shell', 'container.exec']);
+const EDIT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'apply_patch', 'edit', 'write', 'patch'];
 
 const total = (c: ApiCall) => c.input + c.cw5 + c.cw1h + c.cr + c.out;
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
@@ -208,7 +217,7 @@ export function buildView(ds: Dataset, f: Filter, palette: Palette, groupBy: Gro
   const byModel = breakdown((c) => c.model, (k) => k);
   const byEffort = breakdown((c) => c.effort, (k) => k);
   const byThread = breakdown((c) => (c.sub ? 'Subagents' : 'Main thread'), (k) => k);
-  const bySource = breakdown((c) => (sourceOf.get(c.sid) === 'codex' ? 'Codex' : 'Claude Code'), (k) => k);
+  const bySource = breakdown((c) => sourceLabel(sourceOf.get(c.sid) ?? 'claude'), (k) => k);
   const byTokenType: Row[] = TOKEN_TYPES.map((t) => ({
     key: t.key,
     label: t.label,
@@ -263,7 +272,7 @@ export function buildView(ds: Dataset, f: Filter, palette: Palette, groupBy: Gro
         key: sid,
         label: s?.title || sid.slice(0, 8),
         value: r.cost,
-        tool: s?.source === 'codex' ? 'Codex' : 'Claude Code',
+        tool: sourceLabel(s?.source ?? 'claude'),
         project: label(s?.project ?? ''),
         branch: s?.branch ?? '',
         ts: r.first,
@@ -305,10 +314,10 @@ export function buildView(ds: Dataset, f: Filter, palette: Palette, groupBy: Gro
   const byServer = toolRows((t) => t.server);
   const byBash = toolRows((t) => (SHELL_TOOLS.has(t.name) ? t.detail : null));
   const fileRows = (names: string[]) => toolRows((t) => (names.includes(t.name) && t.detail ? (t.files ?? t.detail) : null));
-  const filesRead = fileRows(['Read']);
+  const filesRead = fileRows(['Read', 'read']);
   const filesEdited = fileRows(EDIT_TOOLS);
   const byContext = [...byTool].sort((a, b) => (b.carriedCost as number) - (a.carriedCost as number)).map((r) => ({ ...r, value: r.carriedCost as number }));
-  const byWeb = toolRows((t) => (t.name === 'WebFetch' ? t.detail || '(other)' : null));
+  const byWeb = toolRows((t) => (t.name === 'WebFetch' || t.name === 'webfetch' ? t.detail || '(other)' : null));
 
   // --- Skills, subagents, commands
   const skillAgg = new Map<string, { n: number; tool: number; slash: number; subagent: number; prompts: Set<number>; projects: Set<string> }>();
@@ -377,7 +386,7 @@ export function buildView(ds: Dataset, f: Filter, palette: Palette, groupBy: Gro
   };
 
   // --- Plan usage limits (Codex). They are account-wide, so only the date filter applies.
-  const limitSamples = f.source === 'claude' ? [] : ds.limits.filter((x) => (f.from == null || x.ts >= f.from) && (f.to == null || x.ts < f.to));
+  const limitSamples = f.source != null && f.source !== 'codex' ? [] : ds.limits.filter((x) => (f.from == null || x.ts >= f.from) && (f.to == null || x.ts < f.to));
   const limitKeys = [...new Set(limitSamples.map((x) => `${x.limit}|${x.windowMinutes}`))].sort((a, b) => Number(a.split('|')[1]) - Number(b.split('|')[1]));
   const lTs = limitSamples.map((x) => x.ts);
   const lDays = lTs.length ? daysBetween(minOf(lTs), maxOf(lTs)) : [];

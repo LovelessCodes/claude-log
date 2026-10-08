@@ -5,6 +5,7 @@ import { StrictMode, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import Dashboard from './Dashboard';
 import { Footer, TooltipProvider } from './components/ui';
+import { toolTitle } from './core/aggregate';
 import type { Dataset } from './core/types';
 import { applyTheme, currentTheme, type Theme } from './theme';
 import './styles.css';
@@ -32,7 +33,7 @@ function Report({ dataset }: { dataset: Dataset }) {
 }
 
 const dataset = readDataset();
-if (dataset?.sources.includes('codex')) document.title = dataset.sources.includes('claude') ? 'Claude Code + Codex Analytics report' : 'Codex Analytics report';
+if (dataset && dataset.sources.length > 0) document.title = `${toolTitle(dataset.sources)} Analytics report`;
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     {dataset ? (

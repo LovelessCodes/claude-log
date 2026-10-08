@@ -1,9 +1,9 @@
-// Normalized data model the parser builds from Claude Code or Codex transcripts.
-// Every row has `ts` (ms) and `project` (the directory key in ~/.claude/projects,
-// or the same encoding of the session cwd for Codex) so the date and project
-// filters work the same way on every table.
+// Normalized data model the parser builds from Claude Code, Codex or OpenCode
+// sessions. Every row has `ts` (ms) and `project` (the directory key in
+// ~/.claude/projects, or the same encoding of the session cwd for Codex and
+// OpenCode) so the date and project filters work the same way on every table.
 
-export type Source = 'claude' | 'codex';
+export type Source = 'claude' | 'codex' | 'opencode';
 
 export interface ApiCall {
   ts: number;
@@ -190,7 +190,8 @@ export interface LimitSample {
 }
 
 export interface Dataset {
-  // Which tools the data comes from. A report can combine Claude Code and Codex.
+  // Which tools the data comes from. A report can combine Claude Code, Codex
+  // and OpenCode.
   sources: Source[];
   sourceName: string;
   generatedAt: number;

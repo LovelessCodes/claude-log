@@ -2,17 +2,22 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { Heatmap, StackedColumns } from './components/charts';
 import { icons, Logo } from './components/icons';
 import { BarList, Card, DataTable, Segmented, StatTile, ThemeToggle, type Column } from './components/ui';
-import { buildPalette, buildView, type Filter, type GroupBy, type Row, type View } from './core/aggregate';
+import { buildPalette, buildView, sourceLabel, toolTitle, type Filter, type GroupBy, type Row, type View } from './core/aggregate';
 import { compact, date, dateTime, dayLabel, duration, num, pct, usd, usdExact } from './core/format';
 import type { Dataset, LiveSession, Source } from './core/types';
 import type { Theme } from './theme';
 
 type Preset = 'all' | '30d' | '7d' | '1d' | 'custom';
 type ToolFilter = 'all' | Source;
-// Which tools the current view shows. Codex records no subagents, hooks,
-// cost-state or Read tool, so those parts are hidden without Claude Code data.
-type Has = { claude: boolean; codex: boolean };
+// Which tools the current view shows. Codex records no subagents, hooks or
+// cost-state; OpenCode records no hooks or plan limits. Those parts are hidden
+// when the view has no data for them.
+type Has = { claude: boolean; codex: boolean; opencode: boolean };
 const DAY = 86_400_000;
+
+const anySubagents = (has: Has) => has.claude || has.opencode;
+const anyLines = (has: Has) => has.claude || has.opencode;
+const anyDenials = (has: Has) => has.claude || has.opencode;
 
 const n = (r: Row, k: string) => Number(r[k] ?? 0);
 
@@ -55,9 +60,9 @@ export default function Dashboard({ dataset: ds, onReset, theme, onTheme }: { da
     }
   }, [preset, customFrom, customTo, project, tool, lastTs]);
 
-  const both = ds.sources.length > 1;
+  const multi = ds.sources.length > 1;
   const shown = tool === 'all' ? ds.sources : [tool];
-  const has: Has = { claude: shown.includes('claude'), codex: shown.includes('codex') };
+  const has: Has = { claude: shown.includes('claude'), codex: shown.includes('codex'), opencode: shown.includes('opencode') };
   const palette = useMemo(() => buildPalette(ds), [ds]);
   const v = useMemo(() => buildView(ds, filter, palette, groupBy), [ds, filter, palette, groupBy]);
   const projectOptions = useMemo(() => {
@@ -75,14 +80,14 @@ export default function Dashboard({ dataset: ds, onReset, theme, onTheme }: { da
         <div className="brand">
           <Logo size={36} />
           <div>
-            <h1>{both ? 'Claude Code + Codex Analytics' : ds.sources[0] === 'codex' ? 'Codex Analytics' : 'Claude Code Analytics'}</h1>
+            <h1>{toolTitle(ds.sources)} Analytics</h1>
             <div className="source">
               <span className="source-file">
                 {icons.file}
                 {ds.sourceName}
               </span>
               <span>
-                {num(ds.files.transcripts)} sessions{ds.sources.includes('claude') ? ` · ${num(ds.files.subagents)} subagents` : ''}
+                {num(ds.files.transcripts)} sessions{ds.files.subagents > 0 ? ` · ${num(ds.files.subagents)} subagents` : ''}
               </span>
               <span>
                 {date(firstTs)} – {date(lastTs)}
@@ -123,15 +128,14 @@ export default function Dashboard({ dataset: ds, onReset, theme, onTheme }: { da
             </label>
           </>
         )}
-        {both && (
+        {multi && (
           <Segmented<ToolFilter>
             label="Tool"
             value={tool}
             onChange={setTool}
             options={[
               { value: 'all', label: 'All tools' },
-              { value: 'claude', label: 'Claude Code' },
-              { value: 'codex', label: 'Codex' },
+              ...ds.sources.map((s) => ({ value: s, label: sourceLabel(s) })),
             ]}
           />
         )}
@@ -198,12 +202,26 @@ function Overview({ v, has }: { v: View; has: Has }) {
         value={usdExact(k.cost)}
         sub={
           k.reported.sessions > 0 ? (
-            <>
-              Claude Code itself recorded {usdExact(k.reported.cost)} for {num(k.reported.sessions)} finished sessions in this range. Transcripts give{' '}
-              {pct(Math.abs(gap), 1)} {gap < 0 ? 'less' : 'more'} because they don't include auxiliary calls.
-            </>
+            has.claude && has.opencode ? (
+              <>
+                The tools' own records add up to {usdExact(k.reported.cost)} for {num(k.reported.sessions)} sessions in this range; the parsed calls give{' '}
+                {pct(Math.abs(gap), 1)} {gap < 0 ? 'less' : 'more'}.
+              </>
+            ) : has.claude ? (
+              <>
+                Claude Code itself recorded {usdExact(k.reported.cost)} for {num(k.reported.sessions)} finished sessions in this range. Transcripts give{' '}
+                {pct(Math.abs(gap), 1)} {gap < 0 ? 'less' : 'more'} because they don't include auxiliary calls.
+              </>
+            ) : (
+              <>
+                OpenCode itself recorded {usdExact(k.reported.cost)} for {num(k.reported.sessions)} sessions in this range. Every call is logged, so
+                the two numbers are usually very close.
+              </>
+            )
           ) : (
-            `On a subscription this is the equivalent value, not an actual bill.${has.codex ? ' Codex costs use OpenAI standard tier prices.' : ''}`
+            `On a subscription this is the equivalent value, not an actual bill.${has.codex ? ' Codex costs use OpenAI standard tier prices.' : ''}${
+              has.opencode ? ' OpenCode costs are the amounts OpenCode recorded.' : ''
+            }`
           )
         }
       />
@@ -213,19 +231,19 @@ function Overview({ v, has }: { v: View; has: Has }) {
       <StatTile label="Sessions" value={num(k.sessions)} sub={`${usd(k.sessions ? k.cost / k.sessions : 0)} avg per session`} />
       <StatTile label="Tool calls" value={num(k.tools)} sub={`${(k.prompts ? k.tools / k.prompts : 0).toFixed(1)} per prompt`} />
       <StatTile label="Output tokens" value={compact(k.out)} sub={`${pct(k.thinkShare)} is thinking`} />
-      {has.claude && <StatTile label="Subagent share of cost" value={pct(k.subShare)} />}
-      <StatTile span={has.claude ? 3 : 6} label="Daily average" value={usd(k.perDay)} sub={`${num(k.activeDays)} active days`} />
+      {anySubagents(has) && <StatTile label="Subagent share of cost" value={pct(k.subShare)} />}
+      <StatTile span={anySubagents(has) ? 3 : 6} label="Daily average" value={usd(k.perDay)} sub={`${num(k.activeDays)} active days`} />
       <StatTile
-        span={has.claude ? 3 : 6}
+        span={anySubagents(has) ? 3 : 6}
         label="Most expensive day"
         value={k.peakDay ? usd(k.peakDay[1]) : '—'}
         sub={k.peakDay ? dayLabel(k.peakDay[0]) : undefined}
       />
-      {has.claude && (
+      {anyLines(has) && (
         <StatTile
           label="Lines changed"
           value={`+${compact(k.reported.linesAdded)} / −${compact(k.reported.linesRemoved)}`}
-          sub="from cost-state records, finished sessions only"
+          sub="from the tool's own session records, finished sessions only"
         />
       )}
     </Section>
@@ -281,8 +299,8 @@ function Limits({ v, has }: { v: View; has: Has }) {
 // ---------- Where the money goes ----------
 
 function Spend({ v, groupBy, setGroupBy, has }: { v: View; groupBy: GroupBy; setGroupBy: (g: GroupBy) => void; has: Has }) {
-  const span = has.claude ? 4 : 6;
-  const both = has.claude && has.codex;
+  const span = anySubagents(has) ? 4 : 6;
+  const multi = has.claude && (has.codex || has.opencode) || has.codex && has.opencode;
   const breakdownTable = (rows: Row[], first: string) => ({
     rows,
     sortKey: 'value',
@@ -328,13 +346,13 @@ function Spend({ v, groupBy, setGroupBy, has }: { v: View; groupBy: GroupBy; set
       >
         <StackedColumns days={v.daily.days} series={v.daily.series} format={usd} />
       </Card>
-      <Card span={both ? 4 : 6} title="Cost by project" table={breakdownTable(v.byProject, 'Project')}>
+      <Card span={multi ? 4 : 6} title="Cost by project" table={breakdownTable(v.byProject, 'Project')}>
         <BarList rows={v.byProject} format={usd} tip={tip} />
       </Card>
-      <Card span={both ? 4 : 6} title="Cost by model" table={breakdownTable(v.byModel, 'Model')}>
+      <Card span={multi ? 4 : 6} title="Cost by model" table={breakdownTable(v.byModel, 'Model')}>
         <BarList rows={v.byModel} format={usd} tip={tip} />
       </Card>
-      {both && (
+      {multi && (
         <Card span={4} title="Cost by tool" table={breakdownTable(v.bySource, 'Tool')}>
           <BarList rows={v.bySource} format={usd} tip={tip} />
         </Card>
@@ -359,7 +377,7 @@ function Spend({ v, groupBy, setGroupBy, has }: { v: View; groupBy: GroupBy; set
       <Card span={span} title="Cost by effort level" table={breakdownTable(v.byEffort, 'Effort')}>
         <BarList rows={v.byEffort} format={usd} tip={tip} />
       </Card>
-      {has.claude && (
+      {anySubagents(has) && (
         <Card span={4} title="Main thread vs. subagents" table={breakdownTable(v.byThread, 'Thread')}>
           <BarList rows={v.byThread} format={usd} tip={tip} />
         </Card>
@@ -376,7 +394,7 @@ function Prompts({ v, has }: { v: View; has: Has }) {
     <Section
       title="Most expensive prompts"
       icon={icons.prompt}
-      lead={`A prompt's cost is every API call from when it was sent until the next prompt${has.claude ? ', including subagents started in that time.' : '.'}`}
+      lead={`A prompt's cost is every API call from when it was sent until the next prompt${anySubagents(has) ? ', including subagents started in that time.' : '.'}`}
     >
       <Card span={12} title="Top 100 prompts by cost">
         <DataTable<P>
@@ -407,7 +425,7 @@ function Prompts({ v, has }: { v: View; has: Has }) {
             { key: 'ts', label: 'When', render: (r) => dateTime(r.ts), value: (r) => r.ts },
             { key: 'calls', label: 'Calls', num: true, render: (r) => num(r.calls) },
             { key: 'tools', label: 'Tools', num: true, render: (r) => num(r.tools) },
-            ...(has.claude ? [{ key: 'subCost', label: 'Subagents part', num: true, render: (r: P) => (r.subCost ? usd(r.subCost) : '—') }] : []),
+            ...(anySubagents(has) ? [{ key: 'subCost', label: 'Subagents part', num: true, render: (r: P) => (r.subCost ? usd(r.subCost) : '—') }] : []),
             { key: 'tokens', label: 'Tokens', num: true, render: (r) => compact(r.tokens) },
           ]}
         />
@@ -424,7 +442,7 @@ function Sessions({ v, has }: { v: View; has: Has }) {
     <Section
       title="Sessions"
       icon={icons.sessions}
-      lead={`“Max context” is the largest input of a single main-thread call. Long sessions without ${has.claude ? (has.codex ? '/clear (/new in Codex)' : '/clear') : '/new'} read that context on every step.`}
+      lead={`“Max context” is the largest input of a single main-thread call. Long sessions without ${has.claude ? '/clear' : has.codex ? '/new' : 'a new session'} read that context on every step.`}
     >
       <Card span={12} title="Top 100 sessions by cost">
         <DataTable<S>
@@ -433,7 +451,7 @@ function Sessions({ v, has }: { v: View; has: Has }) {
           columns={[
             { key: 'value', label: 'Cost', num: true, render: (r) => usdExact(r.value) },
             { key: 'label', label: 'Session', wrap: true },
-            ...(has.claude && has.codex ? [{ key: 'tool', label: 'Tool' }] : []),
+            ...(has.claude && (has.codex || has.opencode) || has.codex && has.opencode ? [{ key: 'tool', label: 'Tool' }] : []),
             { key: 'project', label: 'Project' },
             { key: 'branch', label: 'Branch' },
             { key: 'ts', label: 'Start', render: (r) => dateTime(r.ts), value: (r) => r.ts },
@@ -443,7 +461,7 @@ function Sessions({ v, has }: { v: View; has: Has }) {
             { key: 'tools', label: 'Tools', num: true, render: (r) => num(r.tools) },
             { key: 'maxCtx', label: 'Max context', num: true, render: (r) => compact(r.maxCtx) },
             { key: 'compactions', label: 'Compactions', num: true },
-            ...(has.claude ? [{ key: 'subagents', label: 'Subagents', num: true }] : []),
+            ...(anySubagents(has) ? [{ key: 'subagents', label: 'Subagents', num: true }] : []),
           ]}
         />
       </Card>
@@ -560,14 +578,14 @@ function Tools({ v, has }: { v: View; has: Has }) {
       </Card>
       <Card
         span={has.claude ? 4 : 6}
-        title={has.codex ? 'Shell commands' : 'Bash commands'}
+        title={has.claude ? 'Bash commands' : 'Shell commands'}
         sub="First word of the command, skipping cd and variables"
         table={toolTable(v.byBash, 'Command')}
       >
         <BarList rows={v.byBash} format={num} tip={toolTip} limit={12} />
       </Card>
       {/* Codex reads files through shell commands, so there is no Read tool to count. */}
-      {has.claude && (
+      {(has.claude || has.opencode) && (
         <Card span={4} title="Most read files" table={toolTable(v.filesRead, 'File')}>
           <BarList rows={v.filesRead} format={num} tip={toolTip} limit={12} display={pathTail} />
         </Card>
@@ -575,7 +593,13 @@ function Tools({ v, has }: { v: View; has: Has }) {
       <Card
         span={has.claude ? 4 : 6}
         title="Most edited files"
-        sub={!has.claude ? 'apply_patch, once per file in a patch' : has.codex ? 'Edit, Write, MultiEdit, apply_patch' : 'Edit, Write, MultiEdit'}
+        sub={
+          has.claude && (has.codex || has.opencode)
+            ? 'Edit, Write, MultiEdit, apply_patch'
+            : has.claude
+              ? 'Edit, Write, MultiEdit'
+              : 'write, edit, apply_patch (once per file in a patch)'
+        }
         table={toolTable(v.filesEdited, 'File')}
       >
         <BarList rows={v.filesEdited} format={num} tip={toolTip} limit={12} display={pathTail} />
@@ -592,16 +616,18 @@ function Tools({ v, has }: { v: View; has: Has }) {
 // ---------- Skills, subagents, commands ----------
 
 function Skills({ v, has }: { v: View; has: Has }) {
+  const lead = [
+    has.claude
+      ? 'A skill is counted when the model invoked it (the Skill tool), when you typed it as a /command, or when it started a subagent (forked skill).'
+      : has.opencode
+        ? 'A skill is counted when the model invoked it (the skill tool) or when it read the skill\u2019s SKILL.md file.'
+        : 'A skill is counted when Codex reads its SKILL.md with a shell command.',
+    has.claude && has.codex ? ' A Codex skill is counted when Codex reads its SKILL.md.' : '',
+    has.claude && has.opencode ? ' An OpenCode skill is counted when the skill tool or a file read loads it.' : '',
+    ' Turn cost is the total cost of the prompts in which the skill was used.',
+  ].join('');
   return (
-    <Section
-      title={has.claude ? 'Skills, subagents and commands' : 'Skills and commands'}
-      icon={icons.skills}
-      lead={
-        has.claude
-          ? `A skill is counted when the model invoked it (the Skill tool), when you typed it as a /command, or when it started a subagent (forked skill).${has.codex ? ' A Codex skill is counted when Codex reads its SKILL.md.' : ''} Turn cost is the total cost of the prompts in which the skill was used.`
-          : 'A skill is counted when Codex reads its SKILL.md with a shell command. Turn cost is the total cost of the prompts in which the skill was used.'
-      }
-    >
+    <Section title={anySubagents(has) ? 'Skills, subagents and commands' : 'Skills and commands'} icon={icons.skills} lead={lead}>
       <Card
         span={6}
         title="Skill uses"
@@ -631,7 +657,7 @@ function Skills({ v, has }: { v: View; has: Has }) {
           ]}
         />
       </Card>
-      {has.claude && (
+      {anySubagents(has) && (
         <Card
           span={6}
           title="Subagent cost by type"
@@ -721,8 +747,8 @@ function Activity({
       </div>
       <Card
         span={12}
-        title="Prompts per day (history.jsonl)"
-        sub="Full history of typed prompts, excluding slash commands. Goes further back than the transcripts."
+        title="Prompts per day"
+        sub="Typed prompts, excluding slash commands. Claude Code reads this from history.jsonl, which goes further back than the transcripts; OpenCode has no separate history."
         table={{
           rows: v.historyDaily.days.map((d, i) => ({ day: d, value: v.historyDaily.series[0].values[i] })),
           columns: [
@@ -773,7 +799,7 @@ const LIVE_STATUS: Record<string, { label: string; color: string }> = {
 // ---------- Friction ----------
 
 function Friction({ v, has }: { v: View; has: Has }) {
-  const tile = has.claude ? 3 : 4;
+  const tile = anyDenials(has) ? 3 : 4;
   const simple = (first: string) => ({
     sortKey: 'value',
     columns: [

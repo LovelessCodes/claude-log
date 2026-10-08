@@ -25,6 +25,7 @@ export type FileKind =
   | { kind: 'subagent-meta'; project: string; sid: string; agentId: string }
   | { kind: 'subagent-skill'; project: string; sid: string; agentId: string }
   | { kind: 'rollout'; sid: string }
+  | { kind: 'database' }
   | { kind: 'history' }
   | { kind: 'stats' }
   | { kind: 'live' };
